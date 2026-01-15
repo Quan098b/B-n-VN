@@ -1,0 +1,12 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "Launch Vietnam 3D",
+      "url": "http://127.0.0.1:8080/vietnam-3d.html",
+      "webRoot": "${workspaceFolder}"
+    }
+  ]
+}

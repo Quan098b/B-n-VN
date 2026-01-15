@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vietnam 3D Map (Three.js)</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #020812; overflow: hidden; }
+    canvas { width: 100%; height: 100%; display: block; }
+    .hint{
+      position: fixed; left: 12px; bottom: 12px;
+      font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      color: rgba(200,240,255,0.75);
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(0,229,255,0.18);
+      padding: 10px 12px; border-radius: 10px;
+      user-select: none;
+      backdrop-filter: blur(6px);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="hint">Kéo để xoay · Lăn để zoom · Right-drag để pan</div>
+
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+    import { EffectComposer } from 'https://unpkg.com/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'https://unpkg.com/three@0.160.0/examples/jsm/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'https://unpkg.com/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js';
+
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x020812);
+    scene.fog = new THREE.Fog(0x020812, 8, 34);
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
+    camera.position.set(0, 7, 13);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 1.2, 0);
+
+    // Lighting (mang tính mô phỏng, ưu tiên cảm nhận “neon”)
+    scene.add(new THREE.AmbientLight(0x223344, 0.75));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.15);
+    dir.position.set(6, 10, 7);
+    scene.add(dir);
+
+    // Ocean plane
+    const ocean = new THREE.Mesh(
+      new THREE.PlaneGeometry(120, 120),
+      new THREE.MeshStandardMaterial({ color: 0x031a2a, metalness: 0.15, roughness: 0.7 })
+    );
+    ocean.rotation.x = -Math.PI / 2;
+    ocean.position.y = 0;
+    scene.add(ocean);
+
+    // Grid overlay
+    const grid = new THREE.GridHelper(120, 120, 0x00bcd4, 0x004b57);
+    grid.material.transparent = true;
+    grid.material.opacity = 0.22;
+    grid.position.y = 0.015;
+    scene.add(grid);
+
+    // ----------------------------
+    // Vietnam outline (DEMO polygon đơn giản)
+    // Để đúng biên giới, thay bằng GeoJSON -> chuyển sang Shape (gợi ý ở dưới)
+    // ----------------------------
+    const outline2D = [
+      [-1.25,  2.85], [-0.75,  2.95], [-0.35,  2.65], [ 0.20,  2.40],
+      [ 0.65,  1.95], [ 0.55,  1.55], [ 0.25,  1.20], [ 0.15,  0.80],
+      [ 0.25,  0.45], [ 0.55,  0.10], [ 0.75, -0.35], [ 0.85, -0.90],
+      [ 0.65, -1.35], [ 0.25, -1.85], [-0.10, -2.10], [-0.35, -2.40],
+      [-0.65, -2.62], [-0.95, -2.50], [-1.15, -2.20], [-1.05, -1.80],
+      [-0.85, -1.30], [-0.70, -0.80], [-0.72, -0.20], [-0.92,  0.55],
+      [-1.08,  1.10], [-1.18,  1.80], [-1.25,  2.30]
+    ];
+
+    const shape = new THREE.Shape();
+    outline2D.forEach((p, i) => {
+      const x = p[0] * 1.35;
+      const y = p[1] * 1.05;
+      if (i === 0) shape.moveTo(x, y);
+      else shape.lineTo(x, y);
+    });
+    shape.closePath();
+
+    const extrudeSettings = {
+      depth: 0.7,
+      bevelEnabled: true,
+      bevelThickness: 0.10,
+      bevelSize: 0.08,
+      bevelSegments: 3,
+      steps: 1
+    };
+
+    const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+    geom.rotateX(-Math.PI / 2);
+    geom.translate(0, 0.65, 0);
+
+    const landMat = new THREE.MeshStandardMaterial({
+      color: 0x0a2a3a,
+      emissive: 0x00d9ff,
+      emissiveIntensity: 0.32,
+      metalness: 0.45,
+      roughness: 0.22,
+      transparent: true,
+      opacity: 0.93
+    });
+
+    const land = new THREE.Mesh(geom, landMat);
+    scene.add(land);
+
+    // Glowing edges
+    const edges = new THREE.EdgesGeometry(geom, 18);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0x00e5ff,
+      transparent: true,
+      opacity: 0.85
+    });
+    const outline = new THREE.LineSegments(edges, lineMat);
+    outline.renderOrder = 2;
+    scene.add(outline);
+
+    // Simple islands (minh hoạ)
+    function addIsland(x, z, scale = 0.5) {
+      const s = new THREE.Shape();
+      s.moveTo(-0.45, -0.20);
+      s.quadraticCurveTo(0.05, 0.45, 0.55, 0.10);
+      s.quadraticCurveTo(0.20, -0.55, -0.45, -0.20);
+
+      const g = new THREE.ExtrudeGeometry(s, {
+        depth: 0.28,
+        bevelEnabled: true,
+        bevelThickness: 0.05,
+        bevelSize: 0.04,
+        bevelSegments: 2
+      });
+
+      g.rotateX(-Math.PI / 2);
+      g.scale(scale, scale, scale);
+      g.translate(x, 0.35, z);
+
+      const m = landMat.clone();
+      m.emissiveIntensity = 0.24;
+
+      const island = new THREE.Mesh(g, m);
+      const e = new THREE.LineSegments(new THREE.EdgesGeometry(g, 18), lineMat);
+
+      scene.add(island, e);
+    }
+
+    addIsland(4.6,  0.8, 0.55);
+    addIsland(3.6, -1.0, 0.62);
+
+    // Postprocessing: Bloom để tạo “phát sáng”
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.95, 0.45, 0.18);
+    composer.addPass(bloom);
+
+    function resize() {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+      composer.setSize(w, h);
+      bloom.setSize(w, h);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+
+      controls.update();
+
+      // Dao động nhẹ emissive/opacity để tăng cảm giác “năng lượng”
+      land.material.emissiveIntensity = 0.28 + 0.08 * Math.sin(t * 1.25);
+      outline.material.opacity = 0.72 + 0.16 * Math.sin(t * 1.65);
+
+      composer.render();
+    }
+    animate();
+  </script>
+</body>
+</html>
