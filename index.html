@@ -3,251 +3,140 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Vietnam 3D Map (Three.js)</title>
+  <title>VN Pin (2D Fullscreen)</title>
   <style>
-    html, body { height: 100%; margin: 0; background: #020812; overflow: hidden; }
-    canvas { width: 100%; height: 100%; display: block; }
-    .hint{
-      position: fixed; left: 12px; bottom: 12px;
-      font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial;
-      color: rgba(200,240,255,0.75);
-      background: rgba(0,0,0,0.25);
-      border: 1px solid rgba(0,229,255,0.18);
-      padding: 10px 12px; border-radius: 10px;
+    html, body { height: 100%; margin: 0; background: #000; overflow: hidden; }
+    #stage { position: fixed; inset: 0; }
+    #vn {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: contain; /* giữ đúng tỉ lệ ảnh */
+      background: #fff;     /* nền trắng đúng như ảnh mẫu */
       user-select: none;
-      backdrop-filter: blur(6px);
+      -webkit-user-drag: none;
+    }
+    #overlay { position: absolute; inset: 0; pointer-events: none; }
+    .pin {
+      position: absolute;
+      width: 34px; height: 34px;
+      transform: translate(-50%, -100%);
+      filter: drop-shadow(0 4px 10px rgba(0,0,0,0.45));
     }
   </style>
 </head>
 <body>
-  <canvas id="c"></canvas>
-  <div class="hint">Kéo để xoay · Lăn để zoom · Right-drag để pan</div>
+  <div id="stage">
+    <img id="vn" src="./VN.png" alt="VN" />
+    <div id="overlay"></div>
+  </div>
 
-  <!-- Import map dùng CDN, không cần node_modules -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-    }
-  }
-  </script>
+  <script>
+    const vn = document.getElementById("vn");
+    const overlay = document.getElementById("overlay");
 
-  <script type="module">
-    import * as THREE from "three";
-    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-    import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
-    import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
-    import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+    let lastPos = null; // {xNorm, yNorm}
+    const pins = [];
 
-    // ----------------------------
-    // Basic renderer/scene/camera
-    // ----------------------------
-    const canvas = document.getElementById("c");
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
+    function getImageRect() {
+      // Rect ảnh đang hiển thị thật sự (vì object-fit: contain)
+      const r = vn.getBoundingClientRect();
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x020812);
-    scene.fog = new THREE.Fog(0x020812, 8, 34);
+      const naturalW = vn.naturalWidth || 1;
+      const naturalH = vn.naturalHeight || 1;
+      const arImg = naturalW / naturalH;
+      const arBox = r.width / r.height;
 
-    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
-    camera.position.set(0, 7, 13);
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.target.set(0, 1.2, 0);
-
-    // Lighting
-    scene.add(new THREE.AmbientLight(0x223344, 0.75));
-    const dir = new THREE.DirectionalLight(0xffffff, 1.15);
-    dir.position.set(6, 10, 7);
-    scene.add(dir);
-
-    // Ocean
-    const ocean = new THREE.Mesh(
-      new THREE.PlaneGeometry(120, 120),
-      new THREE.MeshStandardMaterial({ color: 0x031a2a, metalness: 0.15, roughness: 0.7 })
-    );
-    ocean.rotation.x = -Math.PI / 2;
-    ocean.position.y = 0;
-    scene.add(ocean);
-
-    // Grid
-    const grid = new THREE.GridHelper(120, 120, 0x00bcd4, 0x004b57);
-    grid.material.transparent = true;
-    grid.material.opacity = 0.22;
-    grid.position.y = 0.015;
-    scene.add(grid);
-
-    // ----------------------------
-    // GeoJSON -> Shapes -> Extrude
-    // ----------------------------
-    function projectMercator([lon, lat]) {
-      const lam = (lon * Math.PI) / 180;
-      const phi = (lat * Math.PI) / 180;
-      const x = lam;
-      const y = Math.log(Math.tan(Math.PI / 4 + phi / 2));
-      return [x, y];
+      let drawW, drawH, offsetX, offsetY;
+      if (arImg > arBox) {
+        drawW = r.width;
+        drawH = r.width / arImg;
+        offsetX = 0;
+        offsetY = (r.height - drawH) / 2;
+      } else {
+        drawH = r.height;
+        drawW = r.height * arImg;
+        offsetY = 0;
+        offsetX = (r.width - drawW) / 2;
+      }
+      return { left: r.left + offsetX, top: r.top + offsetY, width: drawW, height: drawH };
     }
 
-    function geojsonToPolygons(geo) {
-      const out = [];
-      const pushGeom = (geom) => {
-        if (!geom) return;
-        if (geom.type === "Polygon") out.push(geom.coordinates);
-        else if (geom.type === "MultiPolygon") geom.coordinates.forEach(p => out.push(p));
-        else if (geom.type === "GeometryCollection") geom.geometries.forEach(g => pushGeom(g));
+    function updateLastPos(ev) {
+      const ir = getImageRect();
+      const x = ev.clientX - ir.left;
+      const y = ev.clientY - ir.top;
+
+      if (x < 0 || y < 0 || x > ir.width || y > ir.height) {
+        lastPos = null;
+        return;
+      }
+      lastPos = { xNorm: x / ir.width, yNorm: y / ir.height };
+    }
+
+    window.addEventListener("mousemove", updateLastPos, { passive: true });
+
+    function drawPinAtNorm(xNorm, yNorm) {
+      const ir = getImageRect();
+      const vnRect = vn.getBoundingClientRect();
+      const offsetX = ir.left - vnRect.left;
+      const offsetY = ir.top - vnRect.top;
+
+      const x = ir.width * xNorm;
+      const y = ir.height * yNorm;
+
+      const pinEl = document.createElement("img");
+      pinEl.className = "pin";
+      pinEl.src = "./Gim.png";
+      pinEl.alt = "pin";
+      pinEl.style.left = (offsetX + x) + "px";
+      pinEl.style.top  = (offsetY + y) + "px";
+
+      overlay.appendChild(pinEl);
+    }
+
+    function placePin() {
+      if (!lastPos) return false;
+      pins.push({ xNorm: lastPos.xNorm, yNorm: lastPos.yNorm, createdAt: new Date().toISOString() });
+      drawPinAtNorm(lastPos.xNorm, lastPos.yNorm);
+      return true;
+    }
+
+    function redrawPins() {
+      overlay.innerHTML = "";
+      for (const p of pins) drawPinAtNorm(p.xNorm, p.yNorm);
+    }
+
+    window.addEventListener("resize", redrawPins);
+
+    async function savePins() {
+      const payload = {
+        savedAt: new Date().toISOString(),
+        image: "VN.png",
+        pins
       };
-
-      if (geo.type === "FeatureCollection") geo.features.forEach(f => pushGeom(f.geometry));
-      else if (geo.type === "Feature") pushGeom(geo.geometry);
-      else pushGeom(geo);
-
-      return out;
+      const res = await fetch("/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error(`Save failed HTTP ${res.status}`);
+      return await res.json(); // { ok, file }
     }
 
-    function computeBounds(polygons) {
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (const poly of polygons) {
-        for (const ring of poly) {
-          for (const pt of ring) {
-            const [x, y] = projectMercator(pt);
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-          }
-        }
+    window.addEventListener("keydown", async (e) => {
+      if (e.key === "1") {
+        e.preventDefault();
+        placePin(); // không hiển thị thông báo
       }
-      return { minX, maxX, minY, maxY };
-    }
 
-    function ringToPath(ring, scale, cx, cy, target) {
-      for (let i = 0; i < ring.length; i++) {
-        const [px, py] = projectMercator(ring[i]);
-        const x = (px - cx) * scale;
-        const y = (py - cy) * scale;
-        if (i === 0) target.moveTo(x, y);
-        else target.lineTo(x, y);
+      if (e.key === "s" || e.key === "S") {
+        e.preventDefault();
+        if (pins.length === 0) return;
+        try { await savePins(); } catch { /* im lặng */ }
       }
-    }
-
-    const landMat = new THREE.MeshStandardMaterial({
-      color: 0x0a2a3a,
-      emissive: 0x00d9ff,
-      emissiveIntensity: 0.32,
-      metalness: 0.45,
-      roughness: 0.22,
-      transparent: true,
-      opacity: 0.93
     });
 
-    const lineMat = new THREE.LineBasicMaterial({
-      color: 0x00e5ff,
-      transparent: true,
-      opacity: 0.85
-    });
-
-    const vietnamGroup = new THREE.Group();
-    scene.add(vietnamGroup);
-
-    async function loadVietnam() {
-      const res = await fetch("./vietnam.geojson", { cache: "no-store" });
-      if (!res.ok) throw new Error(`Không tải được vietnam.geojson (HTTP ${res.status})`);
-      const geo = await res.json();
-
-      const polygons = geojsonToPolygons(geo);
-      if (polygons.length === 0) throw new Error("GeoJSON không có Polygon/MultiPolygon.");
-
-      const b = computeBounds(polygons);
-      const cx = (b.minX + b.maxX) / 2;
-      const cy = (b.minY + b.maxY) / 2;
-      const w = b.maxX - b.minX;
-      const h = b.maxY - b.minY;
-      const maxDim = Math.max(w, h);
-      const scale = 8.0 / maxDim;
-
-      while (vietnamGroup.children.length) vietnamGroup.remove(vietnamGroup.children[0]);
-
-      const extrudeSettings = {
-        depth: 0.7,
-        bevelEnabled: true,
-        bevelThickness: 0.10,
-        bevelSize: 0.08,
-        bevelSegments: 3,
-        steps: 1
-      };
-
-      for (const poly of polygons) {
-        const outer = poly[0];
-        const holes = poly.slice(1);
-
-        const shape = new THREE.Shape();
-        ringToPath(outer, scale, cx, cy, shape);
-        shape.closePath();
-
-        for (const holeRing of holes) {
-          const holePath = new THREE.Path();
-          ringToPath(holeRing, scale, cx, cy, holePath);
-          holePath.closePath();
-          shape.holes.push(holePath);
-        }
-
-        const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-        geom.rotateX(-Math.PI / 2);
-        geom.translate(0, 0.65, 0);
-
-        vietnamGroup.add(new THREE.Mesh(geom, landMat));
-
-        const edges = new THREE.EdgesGeometry(geom, 18);
-        const outline = new THREE.LineSegments(edges, lineMat);
-        outline.renderOrder = 2;
-        vietnamGroup.add(outline);
-      }
-
-      vietnamGroup.rotation.y = -0.35;
-      controls.target.set(0, 1.1, 0);
-      controls.update();
-    }
-
-    // ----------------------------
-    // Postprocessing Bloom
-    // ----------------------------
-    const composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.45, 0.18);
-    composer.addPass(bloom);
-
-    function resize() {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h, false);
-      composer.setSize(w, h);
-      bloom.setSize(w, h);
-    }
-    window.addEventListener("resize", resize);
-    resize();
-
-    await loadVietnam();
-
-    const clock = new THREE.Clock();
-    function animate() {
-      requestAnimationFrame(animate);
-      const t = clock.getElapsedTime();
-
-      controls.update();
-      landMat.emissiveIntensity = 0.28 + 0.08 * Math.sin(t * 1.25);
-      lineMat.opacity = 0.72 + 0.16 * Math.sin(t * 1.65);
-
-      composer.render();
-    }
-    animate();
+    vn.addEventListener("load", redrawPins);
   </script>
 </body>
 </html>
